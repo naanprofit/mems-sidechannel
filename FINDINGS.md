@@ -1,44 +1,49 @@
-# MacBook Accelerometer/Gyroscope Side-Channel Attack Analysis
+# MacBook MEMS Sensor Side-Channel Attack Analysis
 
 ## Executive Summary
 
-**CONFIRMED**: The MacBook's internal accelerometer and gyroscope can detect electromagnetic interference (EMI) from power lines and nearby electronics. The gyroscope is particularly sensitive to 50/60 Hz mains frequency, making this a viable side-channel for certain intelligence applications.
+**CONFIRMED**: The MacBook's internal accelerometer, gyroscope, and compass/magnetometer can detect electromagnetic interference (EMI) from power lines and nearby electronics. All three sensors are now operational, with the compass providing the highest sample rate.
 
 ## Test Results
 
 ### Hardware Tested
 - **Device**: MacBook Air M4 (Mac16,13)
-- **Sensors**: Bosch BMI286 6-axis IMU
-- **Sample Rate Achieved**: ~800 Hz (after modification)
-- **Nyquist Limit**: ~400 Hz
+- **Sensors**: Bosch BMI286 6-axis IMU + Compass
+- **Sample Rates Achieved**:
+  - Accelerometer: 797 Hz
+  - Gyroscope: 794 Hz
+  - **Compass: 1597 Hz** (highest)
 
 ### EMI Detection Results
 
-| Frequency | Accelerometer SNR | Gyroscope SNR | Detection |
-|-----------|------------------|---------------|-----------|
-| 50 Hz (EU mains) | 3.64 | 2.89 | **DETECTED** |
-| 60 Hz (US mains) | 1.69 | 3.12 | **DETECTED** |
-| 100 Hz (2nd harmonic) | 0.10 | 1.99 | Marginal |
-| 120 Hz (2nd harmonic) | 0.08 | 1.88 | Marginal |
-| 180 Hz (3rd harmonic) | 0.03 | 2.25 | **DETECTED** (gyro) |
+| Frequency | Accelerometer | Gyroscope | Compass | Status |
+|-----------|---------------|-----------|---------|--------|
+| 50 Hz (EU mains) | SNR 6.89 | SNR 2.44 | SNR 2.12 | **DETECTED** |
+| 60 Hz (US mains) | SNR 1.41 | SNR 2.91 | SNR 1.78 | **DETECTED** |
+| 100 Hz (2nd harmonic) | SNR 0.04 | SNR 1.76 | SNR 1.06 | Marginal |
+| 120 Hz (2nd harmonic) | SNR 0.08 | SNR 2.22 | SNR 0.88 | **DETECTED** |
+| 180 Hz (3rd harmonic) | SNR 0.02 | SNR 1.91 | SNR 0.62 | Marginal |
 
-### Key Finding
-**The GYROSCOPE is more sensitive to EMI than the accelerometer.** This aligns with research showing MEMS gyroscopes use vibrating structures that can couple with electromagnetic fields.
+### Key Findings
+
+1. **Accelerometer** is best for 50 Hz detection (SNR 6.89)
+2. **Gyroscope** is most sensitive to EMI overall, detecting multiple harmonics
+3. **Compass** provides **2x sample rate** (1597 Hz vs 797 Hz), enabling higher frequency analysis
 
 ## Attack Vectors
 
 ### 1. Power Line Presence Detection
 **Viability: HIGH**
 
-The sensors clearly detect 50/60 Hz power line interference. This can reveal:
-- Whether AC power is present in a location
-- Proximity to high-voltage equipment
-- Power grid fluctuations
+All sensors detect 50/60 Hz power line interference:
+- Confirm AC power presence in a location
+- Detect proximity to high-voltage equipment
+- Monitor power grid fluctuations
 
 ### 2. Device Proximity Detection
 **Viability: MEDIUM-HIGH**
 
-Nearby electronic devices emit EMI that couples into the IMU:
+Nearby electronic devices emit EMI:
 - Phone charging (switching power supply harmonics)
 - Motors starting/stopping
 - Computer fans spinning up
@@ -47,29 +52,21 @@ Nearby electronic devices emit EMI that couples into the IMU:
 ### 3. Acoustic Eavesdropping
 **Viability: LOW**
 
-Sample rate of 800 Hz allows capturing frequencies up to 400 Hz:
+Compass sample rate of 1597 Hz allows capturing frequencies up to 798 Hz:
 - Male voice fundamental (85-180 Hz): **Detectable but not intelligible**
 - Female voice fundamental (165-255 Hz): **Partially detectable**
 - Speech formants (300-3000 Hz): **NOT detectable**
 
 **Conclusion**: Can detect voice *activity* but NOT speech *content*.
 
-### 4. Keystroke Timing Analysis
-**Viability: MEDIUM**
-
-Keyboard vibrations create detectable patterns:
-- Keystroke timing can be captured
-- Typing rhythm analysis possible
-- Potential for password pattern inference
-
-### 5. Covert Presence Monitoring
+### 4. Covert Presence Monitoring
 **Viability: HIGH**
 
-Without any user indication, the sensors can detect:
+Without user indication, sensors detect:
 - Footsteps and movement
 - Door opening/closing
 - HVAC system state
-- Elevator operation
+- Equipment operation
 
 ## Technical Details
 
@@ -78,51 +75,32 @@ Without any user indication, the sensors can detect:
 - No user notification when sensors are accessed
 - Runs silently in background
 
-### Data Collection Method
-1. Access IOKit HID via `AppleSPUHIDDevice`
-2. Register callbacks for sensor reports
-3. Write to POSIX shared memory ring buffers
-4. Analyze FFT for frequency content
+### Sensor Report Formats
 
-### Sample Rate Limitations
-- Default sensord: ~100 Hz (decimation factor of 8)
-- Modified sensord: ~800 Hz (decimation factor of 1)
-- Hardware maximum: ~1000 Hz (1ms report interval)
+| Sensor | Usage ID | Page | Report Size | Data Format |
+|--------|----------|------|-------------|-------------|
+| Accelerometer | 3 | 0xFF00 | 22 bytes | 6-byte header + 3×4 XYZ |
+| Gyroscope | 9 | 0xFF00 | 22 bytes | 6-byte header + 3×4 XYZ |
+| Compass | 5 | 0xFF00 | 14 bytes | 2-byte header + 3×4 XYZ |
 
-## Compass/Magnetometer Status
-
-**Sensor EXISTS but is NOT fully exposed.**
-
-IOKit shows "Compass reports" in the AOP (Always-On Processor) telemetry, but:
-- Usage ID 5 on Apple vendor page doesn't produce data
-- May require different activation sequence
-- Could be disabled in firmware
-
-If accessible, the magnetometer would provide:
-- Direct EM field measurement
-- Much higher sensitivity to EMI
-- Potential for RF detection
+### Sample Rate Optimization
+- Default sensord: ~100 Hz (IMUDecimation=8)
+- Modified sensord-emi: ~800 Hz accel/gyro, ~1600 Hz compass (IMUDecimation=1)
 
 ## Intelligence Applications
 
 ### Confirmed Capabilities
-1. ✅ Detect power line presence (50/60 Hz)
+1. ✅ Detect power line presence (50/60 Hz EMI)
 2. ✅ Monitor equipment state (motors, fans)
 3. ✅ Voice activity detection (not content)
 4. ✅ Physical presence monitoring
 5. ✅ Device proximity sensing
-
-### Theoretical Capabilities (Unconfirmed)
-1. ⚠️ Keystroke pattern analysis
-2. ⚠️ Cryptographic timing attacks
-3. ⚠️ Equipment fingerprinting
-4. ⚠️ Power consumption inference
+6. ✅ Higher frequency EMI with compass (up to 798 Hz)
 
 ### NOT Capable Of
-1. ❌ Intelligible speech capture
-2. ❌ High-frequency RF detection
-3. ❌ WiFi/Bluetooth sniffing
-4. ❌ Direct data exfiltration
+1. ❌ Intelligible speech capture (sample rate too low for formants)
+2. ❌ High-frequency RF detection (WiFi, Bluetooth, cellular)
+3. ❌ Direct data exfiltration
 
 ## Countermeasures
 
@@ -136,36 +114,31 @@ If accessible, the magnetometer would provide:
 - Sandbox applications from sensor access
 - Audit processes with root privileges
 
-### Operational
-- Avoid sensitive conversations near laptop
-- Don't place laptop on shared surfaces
-- Use external keyboard with different surface
-
 ## Files and Tools
 
 | File | Purpose |
 |------|---------|
 | `accel_mic.py` | Audio capture via accelerometer |
-| `emi_detector.py` | EMI frequency analysis |
-| `sensord-emi` | Modified sensor daemon (800 Hz) |
+| `emi_detector.py` | EMI frequency analysis (all 3 sensors) |
+| `sensord-emi` | Modified sensor daemon (high sample rate) |
 | `start_capture.sh` | Quick-start script |
 
 ## References
 
 1. "Gyrophone: Recognizing Speech from Gyroscope Signals" - Stanford, 2014
 2. "AccelWord: Energy Efficient Hotword Detection through Accelerometer" - 2015
-3. "Keyboard Acoustic Emanations Revisited" - UC Berkeley, 2005
-4. "Side-Channel Attacks via MEMS Gyroscope Signals" - Various, 2016-2020
+3. "Side-Channel Attacks via MEMS Gyroscope Signals" - Various, 2016-2020
+4. taigrr/apple-silicon-accelerometer - IOKit sensor access library
 
 ## Conclusion
 
-The MacBook accelerometer/gyroscope side-channel is **real and exploitable** for certain intelligence applications. The primary value is in:
+The MacBook MEMS sensor side-channel is **real and exploitable** for certain intelligence applications:
 
 1. **Metadata collection** - knowing WHEN activity occurs, not WHAT
 2. **Environmental awareness** - detecting nearby electronics and power
 3. **Presence detection** - monitoring physical activity without cameras
 
-The attack requires root access but runs silently with no user indication. The gyroscope is more sensitive to EMI than the accelerometer, making it the preferred sensor for electromagnetic surveillance.
+The attack requires root access but runs silently with no user indication. The compass provides the highest sample rate (1597 Hz), while the gyroscope is most sensitive to EMI.
 
 ---
 
