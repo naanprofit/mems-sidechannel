@@ -8,11 +8,13 @@
 
 ### Hardware Tested
 - **Device**: MacBook Air M4 (Mac16,13)
-- **Sensors**: Bosch BMI286 6-axis IMU + Compass
+- **Sensors**: Bosch BMI286 6-axis IMU + Compass + ALS + Unknown
 - **Sample Rates Achieved**:
   - Accelerometer: 797 Hz
   - Gyroscope: 794 Hz
   - **Compass: 1597 Hz** (highest)
+  - ALS: ~10 Hz
+  - Unknown sensors: 0.2-0.4 Hz
 
 ### EMI Detection Results
 
@@ -29,6 +31,42 @@
 1. **Accelerometer** is best for 50 Hz detection (SNR 6.89)
 2. **Gyroscope** is most sensitive to EMI overall, detecting multiple harmonics
 3. **Compass** provides **2x sample rate** (1597 Hz vs 797 Hz), enabling higher frequency analysis
+
+## All Sensors Discovered
+
+### Known Sensors (Page 0xFF00)
+
+| Sensor | Usage ID | Report Size | Sample Rate | Status |
+|--------|----------|-------------|-------------|--------|
+| Accelerometer | 3 | 22 bytes | 797 Hz | ✅ Working |
+| Gyroscope | 9 | 22 bytes | 794 Hz | ✅ Working |
+| Compass | 5 | 14 bytes | 1597 Hz | ✅ Working |
+| ALS | 4 | 122 bytes | ~10 Hz | ✅ Working |
+| System Status | 255 | 1 byte | Variable | Monitoring |
+
+### Known Sensors (Page 0x0020)
+
+| Sensor | Usage ID | Report Size | Status |
+|--------|----------|-------------|--------|
+| Lid Angle | 138 | 8 bytes | ⚠️ Returns zeros |
+
+### Unknown Sensors (Page 0xFF0C)
+
+| Usage ID | Report Size | Pattern | Likely Identity |
+|----------|-------------|---------|-----------------|
+| 1 | 5 bytes | Multiple patterns | Motion coprocessor status |
+| 5 | 100 bytes | Sporadic | Force Touch / Taptic? |
+
+### Unknown Sensor Patterns (Page 0xFF0C, Usage 1)
+
+| Pattern | Bytes | Rate | Interpretation |
+|---------|-------|------|----------------|
+| `1d 01 00 00 XX` | 5 | 0.2 Hz | Activity index or entropy (values 10-227, random-like) |
+| `02 01 02 00 XX` | 5 | 0.4 Hz | Sequence counter (incrementing, wraps at 256) |
+| `03 02 00 00 01` | 5 | 0.4 Hz | Heartbeat/status (always 1, occasionally 2) |
+| `50 XX XX XX XX` | 5 | Sporadic | Taptic/Force Touch event |
+
+**Note**: The `1d 01 00 00 XX` pattern was initially thought to be temperature, but values range 10-227 with no correlation to actual temp. More likely a motion activity summary or hardware entropy source.
 
 ## Attack Vectors
 
@@ -68,6 +106,21 @@ Without user indication, sensors detect:
 - HVAC system state
 - Equipment operation
 
+### 5. Optical Side-Channel (ALS)
+**Viability: MEDIUM**
+
+Ambient Light Sensor at ~10 Hz can detect:
+- Room light on/off
+- Human shadow/movement
+- Screen brightness changes
+- **Cannot** detect LED PWM (too slow)
+
+ALS Report Format (122 bytes):
+- Offset 0-1: Incrementing counter
+- Offset 4-5: Light level (varies significantly)
+- Offset 6-7: Second counter
+- Multiple channels suggest RGB/IR/clear separation
+
 ## Technical Details
 
 ### Sensor Access Requirements
@@ -82,6 +135,8 @@ Without user indication, sensors detect:
 | Accelerometer | 3 | 0xFF00 | 22 bytes | 6-byte header + 3×4 XYZ |
 | Gyroscope | 9 | 0xFF00 | 22 bytes | 6-byte header + 3×4 XYZ |
 | Compass | 5 | 0xFF00 | 14 bytes | 2-byte header + 3×4 XYZ |
+| ALS | 4 | 0xFF00 | 122 bytes | Complex multi-channel |
+| Lid | 138 | 0x0020 | 8 bytes | Unknown (returns zeros) |
 
 ### Sample Rate Optimization
 - Default sensord: ~100 Hz (IMUDecimation=8)
@@ -96,11 +151,14 @@ Without user indication, sensors detect:
 4. ✅ Physical presence monitoring
 5. ✅ Device proximity sensing
 6. ✅ Higher frequency EMI with compass (up to 798 Hz)
+7. ✅ Room lighting changes (ALS)
+8. ✅ Human shadow/movement detection (ALS)
 
 ### NOT Capable Of
 1. ❌ Intelligible speech capture (sample rate too low for formants)
 2. ❌ High-frequency RF detection (WiFi, Bluetooth, cellular)
-3. ❌ Direct data exfiltration
+3. ❌ LED PWM fingerprinting (ALS too slow at 10 Hz)
+4. ❌ Direct data exfiltration
 
 ## Countermeasures
 
@@ -108,6 +166,7 @@ Without user indication, sensors detect:
 - Vibration-dampening laptop stand
 - EMI shielding around laptop
 - Physical separation from sensitive equipment
+- Cover ALS with opaque tape
 
 ### Software
 - Monitor for unexpected IOKit HID access
@@ -120,8 +179,10 @@ Without user indication, sensors detect:
 |------|---------|
 | `accel_mic.py` | Audio capture via accelerometer |
 | `emi_detector.py` | EMI frequency analysis (all 3 sensors) |
-| `sensord-emi` | Modified sensor daemon (high sample rate) |
-| `start_capture.sh` | Quick-start script |
+| `compass_highfreq_test.py` | High-frequency test (400-800 Hz) |
+| `als_analyzer.py` | Ambient light sensor analysis |
+| `unknown_sensors.py` | Decode unknown sensor patterns |
+| `DRONE_SIGNATURES.md` | Drone/robot motor frequencies |
 
 ## References
 
@@ -137,6 +198,7 @@ The MacBook MEMS sensor side-channel is **real and exploitable** for certain int
 1. **Metadata collection** - knowing WHEN activity occurs, not WHAT
 2. **Environmental awareness** - detecting nearby electronics and power
 3. **Presence detection** - monitoring physical activity without cameras
+4. **Optical monitoring** - room lighting and shadow detection
 
 The attack requires root access but runs silently with no user indication. The compass provides the highest sample rate (1597 Hz), while the gyroscope is most sensitive to EMI.
 
